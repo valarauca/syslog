@@ -31,7 +31,6 @@ extern crate syslog;
 
 use slog::{Drain, Level, OwnedKVList, Record};
 use std::{fmt, io};
-use std::sync::Mutex;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::net::SocketAddr;
@@ -61,7 +60,7 @@ fn level_to_severity(level: slog::Level) -> syslog::Severity {
 /// Uses mutex to serialize writes.
 /// TODO: Add one that does not serialize?
 pub struct Streamer3164 {
-    io: Mutex<Box<syslog::Logger>>,
+    io: Box<syslog::Logger>,
     format: Format3164,
 }
 
@@ -69,7 +68,7 @@ impl Streamer3164 {
     /// Create new syslog ``Streamer` using given `format`
     pub fn new(logger: Box<syslog::Logger>) -> Self {
         Streamer3164 {
-            io: Mutex::new(logger),
+            io: logger,
             format: Format3164::new(),
         }
     }
@@ -87,18 +86,13 @@ impl Drain for Streamer3164 {
                     try!(self.format.format(&mut *buf, info, logger_values));
                     let sever = level_to_severity(info.level());
                     {
-                        let io = try!(
-                            self.io
-                                .lock()
-                                .map_err(|_| Error::new(ErrorKind::Other, "locking error"))
-                        );
 
                         let buf = String::from_utf8_lossy(&buf);
-                        let buf = io.format_3164(sever, &buf).into_bytes();
+                        let buf = self.io.format_3164_logstash(sever, &buf).into_bytes();
 
                         let mut pos = 0;
                         while pos < buf.len() {
-                            let n = try!(io.send_raw(&buf[pos..]));
+                            let n = try!(self.io.send_raw(&buf[pos..]));
                             if n == 0 {
                                 break;
                             }
@@ -118,6 +112,8 @@ impl Drain for Streamer3164 {
 
 /// Formatter to format defined in RFC 3164
 pub struct Format3164;
+unsafe impl Sync for Format3164 { }
+unsafe impl Send for Format3164 { }
 
 impl Format3164 {
     /// Create new `Format3164`
